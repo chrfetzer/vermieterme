@@ -43,5 +43,5 @@ jobs:
 
             **Docker:**
             ```bash
-            docker pull mcbernie/vermieterme:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             ```

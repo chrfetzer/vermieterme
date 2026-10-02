@@ -325,6 +325,10 @@ export function BillingPdf({
   const tenantTo = occupancy?.to ?? endDate;
   const isProrated =
     occupancy !== undefined && occupancy.days < occupancy.totalDays;
+  // Only list the tenant's own range if it differs from the billing period
+  // (move-in/out during the period); otherwise it would just repeat it.
+  const tenantRangeDiffers =
+    occupancy !== undefined && occupancy.days !== totalDays;
   const year = startDate.getFullYear();
 
   const difference = totalPrepayment - totalUnitCosts;
@@ -416,17 +420,19 @@ export function BillingPdf({
                 <Text style={styles.metaLabel}>Kalendertage gesamt:</Text>
                 <Text style={styles.metaValue}>{totalDays}</Text>
               </View>
-              <View style={styles.metaRow}>
-                <Text style={styles.metaLabel}>Ihr Abrechnungszeitraum:</Text>
-                <Text style={styles.metaValue}>
-                  {formatDate(tenantFrom)} bis {formatDate(tenantTo)}
-                </Text>
-              </View>
-              {isProrated && (
-                <View style={styles.metaRow}>
-                  <Text style={styles.metaLabel}>Ihre Tage:</Text>
-                  <Text style={styles.metaValue}>{occupancy!.days}</Text>
-                </View>
+              {tenantRangeDiffers && (
+                <>
+                  <View style={styles.metaRow}>
+                    <Text style={styles.metaLabel}>Ihr Abrechnungszeitraum:</Text>
+                    <Text style={styles.metaValue}>
+                      {formatDate(tenantFrom)} bis {formatDate(tenantTo)}
+                    </Text>
+                  </View>
+                  <View style={styles.metaRow}>
+                    <Text style={styles.metaLabel}>Ihre Tage:</Text>
+                    <Text style={styles.metaValue}>{occupancy!.days}</Text>
+                  </View>
+                </>
               )}
               <View style={styles.metaRow}>
                 <Text style={styles.metaLabel}>Geschoss:</Text>

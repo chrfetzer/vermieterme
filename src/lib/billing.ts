@@ -101,15 +101,20 @@ export interface Occupancy {
   from: Date;
   to: Date;
   days: number;
+  // Reference days the entered cost amounts refer to: one year (365/366)
+  // from the period start, or the period length if it is longer.
   totalDays: number;
-  // Share of the billing period the tenant lived in the unit (0..1).
+  // Share of the annual costs the tenant bears (days / totalDays, 0..1).
   factor: number;
   // Calendar months touched by the occupancy — basis for prepayments.
   months: number;
 }
 
-// Time share of a tenant within the billing period. Without a tenant the
-// whole period counts (unit is billed as a whole, e.g. owner-occupied).
+// Time share of a tenant. Cost amounts are entered as annual amounts (e.g.
+// from the WEG statement), so the share is the tenant's days within the
+// billing period relative to a full year. This works both for a full-year
+// period with a mid-year move-in and for a period covering only the tenant's
+// months (1.11.–31.12. → 61/365). Without a tenant the whole period counts.
 export function getOccupancy(
   tenant: Pick<BillingTenant, "moveInDate" | "moveOutDate"> | null,
   startDate: DateLike,
@@ -117,7 +122,17 @@ export function getOccupancy(
 ): Occupancy {
   const start = dayNumber(startDate);
   const end = dayNumber(endDate);
-  const totalDays = Math.max(1, end - start + 1);
+  const startDay = dateFromDayNumber(start);
+  const yearLater = dayNumber(
+    new Date(
+      Date.UTC(
+        startDay.getUTCFullYear() + 1,
+        startDay.getUTCMonth(),
+        startDay.getUTCDate()
+      )
+    )
+  );
+  const totalDays = Math.max(end - start + 1, yearLater - start);
 
   const from = tenant ? Math.max(start, dayNumber(tenant.moveInDate)) : start;
   const to =

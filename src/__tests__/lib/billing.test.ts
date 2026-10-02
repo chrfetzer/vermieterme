@@ -5,6 +5,7 @@ import {
   getBillingParties,
   getOccupancy,
   suggestNextPrepayment,
+  type BillingCost,
 } from "@/lib/billing";
 
 const mea = { distributionKey: "MEA" };
@@ -22,7 +23,7 @@ function billing(startDate: string, endDate: string) {
     startDate,
     endDate,
     property: { totalShares: 10000, units: [{ ...unit, tenants: [tenant] }] },
-    costs: [
+    costs: <BillingCost[]>[
       { totalAmount: 12135.36, unitAmount: null, costCategory: mea },
       { totalAmount: 428.4, unitAmount: null, costCategory: mea },
       { totalAmount: 500, unitAmount: 42.5, costCategory: anlage },
@@ -38,6 +39,12 @@ function billing(startDate: string, endDate: string) {
 }
 
 describe("getOccupancy", () => {
+  it("uses 366 reference days for a leap year", () => {
+    const occ = getOccupancy(null, "2024-01-01", "2024-12-31");
+    expect(occ.totalDays).toBe(366);
+    expect(occ.factor).toBe(1);
+  });
+
   it("covers the full period without tenant", () => {
     const occ = getOccupancy(null, "2025-01-01", "2025-12-31");
     expect(occ.days).toBe(365);
@@ -76,15 +83,32 @@ describe("getOccupancy", () => {
 describe("calculateTenantBilling", () => {
   it("derives MEA shares instead of reading unitAmount (0-€ bug)", () => {
     const r = calculateTenantBilling(
-      billing("2025-11-01", "2025-12-31"),
+      billing("2025-01-01", "2025-12-31"),
       unit,
-      tenant
+      { moveInDate: "2020-01-01", moveOutDate: null }
     );
     // 12135.36 * 78/10000 = 94.66, 428.4 * 78/10000 = 3.34, + 42.50 manual
     expect(r.lines.map((l) => l.unitAmount)).toEqual([94.66, 3.34, 42.5]);
     expect(r.totalUnitCosts).toBe(140.5);
-    expect(r.totalPrepayment).toBe(276);
-    expect(r.difference).toBe(135.5);
+    expect(r.totalPrepayment).toBe(1656);
+  });
+
+  it("treats a period covering only the tenant's months like the full year", () => {
+    const short = calculateTenantBilling(
+      billing("2025-11-01", "2025-12-31"),
+      unit,
+      tenant
+    );
+    const full = calculateTenantBilling(
+      billing("2025-01-01", "2025-12-31"),
+      unit,
+      tenant
+    );
+    expect(short.occupancy.days).toBe(61);
+    expect(short.occupancy.totalDays).toBe(365);
+    expect(short.lines.map((l) => l.unitAmount)).toEqual([15.82, 0.56, 42.5]);
+    expect(short.totalUnitCosts).toBe(full.totalUnitCosts);
+    expect(short.totalPrepayment).toBe(276);
   });
 
   it("prorates MEA costs by occupancy, keeps manual amounts", () => {
@@ -105,7 +129,7 @@ describe("calculateTenantBilling", () => {
       ...bp.costs[0],
       unitAmount: 10,
       distributionKeyOverride: "siehe Anlage",
-    } as (typeof bp.costs)[number];
+    };
     const r = calculateTenantBilling(bp, unit, tenant);
     expect(r.lines[0].unitAmount).toBe(10);
   });
@@ -131,9 +155,9 @@ describe("getBillingParties / calculateBillingTotals", () => {
   it("sums tenant shares for the overview", () => {
     const totals = calculateBillingTotals(billing("2025-11-01", "2025-12-31"));
     expect(totals.totalCosts).toBe(13063.76);
-    expect(totals.totalUnitCosts).toBe(140.5);
+    expect(totals.totalUnitCosts).toBe(58.88);
     expect(totals.totalPrepayment).toBe(276);
-    expect(totals.difference).toBe(135.5);
+    expect(totals.difference).toBe(217.12);
   });
 });
 

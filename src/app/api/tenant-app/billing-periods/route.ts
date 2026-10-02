@@ -1,7 +1,7 @@
 import { apiHandler, jsonOk } from "@/lib/api-utils";
 import { prisma } from "@/lib/prisma";
 import { requireTenantAuth } from "@/lib/tenant-auth";
-import { calculateBillingTotals } from "@/lib/billing";
+import { calculateTenantBilling } from "@/lib/billing";
 
 export function GET() {
   return apiHandler(async () => {
@@ -28,12 +28,7 @@ export function GET() {
     });
 
     const result = billingPeriods.map((bp) => {
-      const totals = calculateBillingTotals(
-        bp.costs,
-        bp.prepayments,
-        bp.startDate.toISOString(),
-        bp.endDate.toISOString()
-      );
+      const totals = calculateTenantBilling(bp, tenant.unit, tenant);
 
       return {
         id: bp.id,

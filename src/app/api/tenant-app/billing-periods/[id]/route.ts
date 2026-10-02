@@ -1,7 +1,7 @@
 import { apiHandler, ApiError, jsonOk } from "@/lib/api-utils";
 import { prisma } from "@/lib/prisma";
 import { requireTenantAuth } from "@/lib/tenant-auth";
-import { calculateBillingTotals, calculateMEAAmount } from "@/lib/billing";
+import { calculateTenantBilling } from "@/lib/billing";
 import { NextRequest } from "next/server";
 
 export function GET(
@@ -35,35 +35,15 @@ export function GET(
       throw new ApiError("Abrechnungszeitraum nicht gefunden", 404);
     }
 
-    const unit = tenant.unit;
-    const property = unit.property;
+    const totals = calculateTenantBilling(bp, tenant.unit, tenant);
 
-    const visibleCosts = bp.costs.filter((cost) => cost.enabled !== false);
-
-    const costs = visibleCosts.map((cost) => {
-      // Per-period override takes precedence over the category default.
-      const distributionKey =
-        cost.distributionKeyOverride ?? cost.costCategory.distributionKey;
-      let unitAmount = cost.unitAmount;
-      if (unitAmount == null && distributionKey.toLowerCase() === "mea") {
-        unitAmount = calculateMEAAmount(cost.totalAmount, unit.shares, property.totalShares);
-      }
-
-      return {
-        id: cost.id,
-        category: cost.costCategory.name,
-        distributionKey,
-        totalAmount: cost.totalAmount,
-        unitAmount: unitAmount ?? 0,
-      };
-    });
-
-    const totals = calculateBillingTotals(
-      visibleCosts,
-      bp.prepayments,
-      bp.startDate.toISOString(),
-      bp.endDate.toISOString()
-    );
+    const costs = totals.lines.map(({ cost, distributionKey, unitAmount }) => ({
+      id: cost.id,
+      category: cost.costCategory.name,
+      distributionKey,
+      totalAmount: cost.totalAmount,
+      unitAmount,
+    }));
 
     const documents = bp.documents.map((doc) => ({
       id: doc.id,

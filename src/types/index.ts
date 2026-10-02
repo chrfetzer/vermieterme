@@ -75,7 +75,11 @@ export interface BillingPeriod {
 }
 
 export interface BillingPeriodWithProperty extends BillingPeriod {
-  property: Property;
+  property: Property & {
+    units?: (Pick<Unit, "id" | "shares"> & {
+      tenants: Pick<Tenant, "id" | "moveInDate" | "moveOutDate">[];
+    })[];
+  };
   _count?: { costs: number };
   costs?: CostWithCategory[];
   prepayments?: Prepayment[];

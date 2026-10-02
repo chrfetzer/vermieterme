@@ -288,6 +288,14 @@ export interface BillingPdfProps {
   totalCosts: number;
   totalUnitCosts: number;
   totalPrepayment: number;
+  // Tenant's share of the billing period. MEA amounts in `costs` are already
+  // prorated by it; here it is only used for display.
+  occupancy?: {
+    from: Date;
+    to: Date;
+    days: number;
+    totalDays: number;
+  };
   templateConfig: PdfTemplateConfig;
 }
 
@@ -301,6 +309,7 @@ export function BillingPdf({
   totalCosts,
   totalUnitCosts,
   totalPrepayment,
+  occupancy,
   templateConfig,
 }: BillingPdfProps) {
   const styles = createStyles(templateConfig);
@@ -312,6 +321,10 @@ export function BillingPdf({
     ? new Date(billingPeriod.billingDate)
     : null;
   const totalDays = daysBetween(startDate, endDate);
+  const tenantFrom = occupancy?.from ?? startDate;
+  const tenantTo = occupancy?.to ?? endDate;
+  const isProrated =
+    occupancy !== undefined && occupancy.days < occupancy.totalDays;
   const year = startDate.getFullYear();
 
   const difference = totalPrepayment - totalUnitCosts;
@@ -327,7 +340,10 @@ export function BillingPdf({
     : null;
 
   function distributionKeyText(key: string, shares: number): string {
-    if (key === "MEA") return `${shares} MEA`;
+    if (key === "MEA")
+      return isProrated
+        ? `${shares} MEA × ${occupancy!.days}/${occupancy!.totalDays} Tage`
+        : `${shares} MEA`;
     if (key === "laut Bescheid") return "laut Bescheid";
     if (key === "siehe Anlage") return "siehe Anlage";
     return key;
@@ -403,9 +419,15 @@ export function BillingPdf({
               <View style={styles.metaRow}>
                 <Text style={styles.metaLabel}>Ihr Abrechnungszeitraum:</Text>
                 <Text style={styles.metaValue}>
-                  {formatDate(startDate)} bis {formatDate(endDate)}
+                  {formatDate(tenantFrom)} bis {formatDate(tenantTo)}
                 </Text>
               </View>
+              {isProrated && (
+                <View style={styles.metaRow}>
+                  <Text style={styles.metaLabel}>Ihre Tage:</Text>
+                  <Text style={styles.metaValue}>{occupancy!.days}</Text>
+                </View>
+              )}
               <View style={styles.metaRow}>
                 <Text style={styles.metaLabel}>Geschoss:</Text>
                 <Text style={styles.metaValue}>{unit.floor}</Text>
@@ -504,6 +526,17 @@ export function BillingPdf({
                 </Text>
                 <Text style={styles.distributionValues}>
                   {unit.shares} / {property.totalShares}
+                </Text>
+              </View>
+            )}
+            {usedKeys.includes("MEA") && isProrated && (
+              <View style={styles.distributionRow}>
+                <Text style={styles.distributionKey}>Zeitanteil</Text>
+                <Text style={styles.distributionDesc}>
+                  MEA-Kosten anteilig für Ihre Mietzeit (Kalendertage)
+                </Text>
+                <Text style={styles.distributionValues}>
+                  {occupancy!.days} / {occupancy!.totalDays}
                 </Text>
               </View>
             )}

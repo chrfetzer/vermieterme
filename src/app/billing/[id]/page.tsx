@@ -7,11 +7,13 @@ import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { Nav } from "@/components/nav";
 import { formatCurrency, formatDate } from "@/lib/format";
 import {
-  calculateMEAAmount,
+  calculateTenantBilling,
   dayAfter,
+  getBillingParties,
   getDaysInPeriod,
   getMonthsInPeriod,
   suggestNextPrepayment,
+  type BillingInput,
 } from "@/lib/billing";
 import { DISTRIBUTION_KEYS } from "@/lib/constants";
 import { Loading } from "@/components/ui/loading";
@@ -23,7 +25,7 @@ import {
   RentChangeDialog,
   type RentChangeDialogValue,
 } from "@/components/rent-change-dialog";
-import type { BillingPeriodDetail, CostCategory, Tenant, UnitWithTenants } from "@/types";
+import type { BillingPeriodDetail, CostCategory, Tenant } from "@/types";
 
 interface NkSuggestionTarget {
   unitId: string;
@@ -338,50 +340,34 @@ export default function BillingDetailPage() {
     }
   }
 
-  function calculateUnitCosts(unit: UnitWithTenants): number {
-    let total = 0;
-    costCategories.forEach((cat) => {
-      const costVal = costValues[cat.id];
-      if (!costVal || !costVal.totalAmount) return;
-      if (costVal.enabled === false) return;
-      const totalAmount = parseFloat(costVal.totalAmount) || 0;
-      const effectiveKey = costVal.distributionKeyOverride ?? cat.distributionKey;
-
-      if (effectiveKey === "MEA") {
-        total += calculateMEAAmount(totalAmount, unit.shares, billingPeriod!.property.totalShares);
-      } else {
-        const unitAmount = costVal.unitAmount
-          ? parseFloat(costVal.unitAmount)
-          : 0;
-        total += unitAmount;
-      }
-    });
-    return total;
+  // Billing input built from the current (possibly unsaved) form values so
+  // the summary updates live while typing.
+  function buildLiveBilling(bp: BillingPeriodDetail): BillingInput {
+    return {
+      startDate: bp.startDate,
+      endDate: bp.endDate,
+      property: bp.property,
+      costs: costCategories
+        .filter((cat) => costValues[cat.id]?.totalAmount)
+        .map((cat) => {
+          const val = costValues[cat.id];
+          return {
+            totalAmount: parseFloat(val.totalAmount) || 0,
+            unitAmount: val.unitAmount ? parseFloat(val.unitAmount) : null,
+            enabled: val.enabled,
+            distributionKeyOverride: val.distributionKeyOverride,
+            costCategory: cat,
+          };
+        }),
+      prepayments: Object.entries(prepaymentValues).map(([unitId, val]) => ({
+        unitId,
+        monthlyAmount: parseFloat(val) || 0,
+      })),
+    };
   }
 
-  function calculateUnitPrepayment(unitId: string): number {
-    const monthly = parseFloat(prepaymentValues[unitId] || "0") || 0;
-    return monthly * getMonthsInPeriod(billingPeriod!.startDate, billingPeriod!.endDate);
-  }
-
-  function getCurrentTenant(unit: UnitWithTenants): Tenant | undefined {
-    return unit.tenants?.find((t) => !t.moveOutDate);
-  }
-
-  function getTotalCosts(): number {
-    if (!billingPeriod) return 0;
-    return billingPeriod.property.units.reduce(
-      (sum, unit) => sum + calculateUnitCosts(unit),
-      0
-    );
-  }
-
-  function getTotalPrepayments(): number {
-    if (!billingPeriod) return 0;
-    return billingPeriod.property.units.reduce(
-      (sum, unit) => sum + calculateUnitPrepayment(unit.id),
-      0
-    );
+  function tenantName(tenant: Tenant | null): string {
+    return tenant ? `${tenant.firstName} ${tenant.lastName}` : "Kein Mieter";
   }
 
   if (loading) {
@@ -417,6 +403,24 @@ export default function BillingDetailPage() {
   const units = property.units || [];
   const monthsInPeriod = getMonthsInPeriod(billingPeriod.startDate, billingPeriod.endDate);
   const daysInPeriod = getDaysInPeriod(billingPeriod.startDate, billingPeriod.endDate);
+  const liveBilling = buildLiveBilling(billingPeriod);
+  const partyResults = getBillingParties(
+    units,
+    billingPeriod.startDate,
+    billingPeriod.endDate
+  ).map(({ unit, tenant }) => ({
+    unit,
+    tenant,
+    result: calculateTenantBilling(liveBilling, unit, tenant),
+  }));
+  const totalPartyCosts = partyResults.reduce(
+    (sum, p) => sum + p.result.totalUnitCosts,
+    0
+  );
+  const totalPartyPrepayments = partyResults.reduce(
+    (sum, p) => sum + p.result.totalPrepayment,
+    0
+  );
 
   // Disabled cost positions are excluded from review tracking — they aren't
   // part of this period's calculation, so they shouldn't show as "ungeprüft".
@@ -595,17 +599,18 @@ export default function BillingDetailPage() {
                       effectiveKey === "siehe Anlage";
 
                     let meaDisplay = "";
-                    if (isMEA && costVal.totalAmount && units.length > 0) {
-                      const amounts = units.map(
-                        (u) =>
-                          `${u.name}: ${formatCurrency(
-                            calculateMEAAmount(
-                              parseFloat(costVal.totalAmount) || 0,
-                              u.shares,
-                              property.totalShares
-                            )
-                          )}`
-                      );
+                    if (isMEA && costVal.totalAmount && partyResults.length > 0) {
+                      const amounts = partyResults.map(({ unit, tenant, result }) => {
+                        const line = result.lines.find(
+                          (l) => l.cost.costCategory === cat
+                        );
+                        const prorated =
+                          result.occupancy.days < result.occupancy.totalDays;
+                        const label = prorated
+                          ? `${unit.name} (${tenantName(tenant)}, ${result.occupancy.days}/${result.occupancy.totalDays} Tage)`
+                          : unit.name;
+                        return `${label}: ${formatCurrency(line?.unitAmount ?? 0)}`;
+                      });
                       meaDisplay = amounts.join(", ");
                     }
 
@@ -780,16 +785,24 @@ export default function BillingDetailPage() {
                       Monatlich
                     </th>
                     <th className="w-40 px-4 py-3 text-right text-xs font-medium uppercase text-zinc-500">
-                      Gesamt ({monthsInPeriod} Mon.)
+                      Gesamt
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200">
                   {units.map((unit) => {
-                    const tenant = getCurrentTenant(unit);
+                    const unitParties = partyResults.filter(
+                      (p) => p.unit.id === unit.id
+                    );
                     const monthlyVal = prepaymentValues[unit.id] || "";
-                    const totalPrepayment =
-                      (parseFloat(monthlyVal) || 0) * monthsInPeriod;
+                    const totalPrepayment = unitParties.reduce(
+                      (sum, p) => sum + p.result.totalPrepayment,
+                      0
+                    );
+                    const prepaymentMonths = unitParties.reduce(
+                      (sum, p) => sum + p.result.occupancy.months,
+                      0
+                    );
                     const isPrepaymentUnreviewed =
                       prepaymentReviewMap[unit.id] === false;
 
@@ -819,9 +832,7 @@ export default function BillingDetailPage() {
                           </div>
                         </td>
                         <td className="px-4 py-3 text-sm text-zinc-600">
-                          {tenant
-                            ? `${tenant.firstName} ${tenant.lastName}`
-                            : "Kein Mieter"}
+                          {unitParties.map((p) => tenantName(p.tenant)).join(", ")}
                         </td>
                         <td className="px-4 py-3 text-sm text-zinc-600">
                           {unit.shares} / {property.totalShares}
@@ -845,6 +856,9 @@ export default function BillingDetailPage() {
                         </td>
                         <td className="px-4 py-3 text-right text-sm font-medium text-zinc-900">
                           {formatCurrency(totalPrepayment)}
+                          <div className="text-xs font-normal text-zinc-500">
+                            {prepaymentMonths} Mon.
+                          </div>
                         </td>
                       </tr>
                     );
@@ -889,21 +903,37 @@ export default function BillingDetailPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200">
-                  {units.map((unit) => {
-                    const tenant = getCurrentTenant(unit);
-                    const unitCosts = calculateUnitCosts(unit);
-                    const unitPrepayment = calculateUnitPrepayment(unit.id);
-                    const result = unitCosts - unitPrepayment;
+                  {partyResults.map(({ unit, tenant, result }) => {
+                    const unitCosts = result.totalUnitCosts;
+                    const unitPrepayment = result.totalPrepayment;
+                    const diff = unitCosts - unitPrepayment;
+                    const prorated =
+                      result.occupancy.days < result.occupancy.totalDays;
 
                     return (
-                      <tr key={unit.id}>
+                      <tr key={`${unit.id}-${tenant?.id ?? "none"}`}>
                         <td className="px-4 py-3 text-sm text-zinc-900">
                           {unit.name}
                         </td>
                         <td className="px-4 py-3 text-sm text-zinc-600">
-                          {tenant
-                            ? `${tenant.firstName} ${tenant.lastName}`
-                            : "Kein Mieter"}
+                          {tenantName(tenant)}
+                          {prorated && (
+                            <div className="text-xs text-zinc-500">
+                              {formatDate(result.occupancy.from.toISOString())} &ndash;{" "}
+                              {formatDate(result.occupancy.to.toISOString())} (
+                              {result.occupancy.days}/{result.occupancy.totalDays} Tage)
+                            </div>
+                          )}
+                          {tenant && (
+                            <a
+                              href={`/api/billing-periods/${id}/pdf?tenantId=${tenant.id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs text-zinc-500 underline hover:text-zinc-700"
+                            >
+                              PDF
+                            </a>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-right text-sm text-zinc-900">
                           {formatCurrency(unitCosts)}
@@ -913,13 +943,13 @@ export default function BillingDetailPage() {
                         </td>
                         <td
                           className={`px-4 py-3 text-right text-sm font-semibold ${
-                            result > 0 ? "text-red-600" : "text-green-600"
+                            diff > 0 ? "text-red-600" : "text-green-600"
                           }`}
                         >
-                          {result > 0
-                            ? `Nachzahlung: ${formatCurrency(result)}`
-                            : result < 0
-                              ? `Erstattung: ${formatCurrency(Math.abs(result))}`
+                          {diff > 0
+                            ? `Nachzahlung: ${formatCurrency(diff)}`
+                            : diff < 0
+                              ? `Erstattung: ${formatCurrency(Math.abs(diff))}`
                               : formatCurrency(0)}
                         </td>
                       </tr>
@@ -935,20 +965,20 @@ export default function BillingDetailPage() {
                       Gesamt
                     </td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-zinc-900">
-                      {formatCurrency(getTotalCosts())}
+                      {formatCurrency(totalPartyCosts)}
                     </td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-zinc-900">
-                      {formatCurrency(getTotalPrepayments())}
+                      {formatCurrency(totalPartyPrepayments)}
                     </td>
                     <td
                       className={`px-4 py-3 text-right text-sm font-bold ${
-                        getTotalCosts() - getTotalPrepayments() > 0
+                        totalPartyCosts - totalPartyPrepayments > 0
                           ? "text-red-600"
                           : "text-green-600"
                       }`}
                     >
                       {formatCurrency(
-                        Math.abs(getTotalCosts() - getTotalPrepayments())
+                        Math.abs(totalPartyCosts - totalPartyPrepayments)
                       )}
                     </td>
                   </tr>
@@ -960,14 +990,24 @@ export default function BillingDetailPage() {
 
         {/* Section 3b: NK-Anpassungs-Empfehlungen (nur bei Nachzahlung) */}
         {(() => {
-          const recommendations = units
-            .map((unit) => {
-              const tenant = getCurrentTenant(unit);
-              const monthly = parseFloat(prepaymentValues[unit.id] || "0") || 0;
-              const unitCosts = calculateUnitCosts(unit);
-              const unitPrepayment = calculateUnitPrepayment(unit.id);
-              const shortfall = unitCosts - unitPrepayment;
-              const suggested = suggestNextPrepayment(monthly, shortfall);
+          // Only tenants still living in the unit after the period get a
+          // suggestion; former tenants won't pay future prepayments.
+          const periodEnd = new Date(billingPeriod.endDate).getTime();
+          const recommendations = partyResults
+            .filter(
+              ({ tenant }) =>
+                tenant &&
+                (!tenant.moveOutDate ||
+                  new Date(tenant.moveOutDate).getTime() > periodEnd)
+            )
+            .map(({ unit, tenant, result }) => {
+              const monthly = result.monthlyPrepayment;
+              const shortfall = result.totalUnitCosts - result.totalPrepayment;
+              const suggested = suggestNextPrepayment(
+                monthly,
+                shortfall,
+                result.occupancy.months
+              );
               if (suggested == null) return null;
               return {
                 unit,
@@ -989,9 +1029,7 @@ export default function BillingDetailPage() {
               <div className="space-y-3">
                 {recommendations.map(
                   ({ unit, tenant, monthly, shortfall, suggested }) => {
-                    const tenantName = tenant
-                      ? `${tenant.firstName} ${tenant.lastName}`
-                      : "Kein Mieter";
+                    const name = tenantName(tenant);
                     const applied = nkAppliedUnitIds.has(unit.id);
                     return (
                       <div
@@ -1001,7 +1039,7 @@ export default function BillingDetailPage() {
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0 flex-1">
                             <p className="font-medium text-zinc-900">
-                              {tenantName}
+                              {name}
                               <span className="ml-2 text-sm font-normal text-zinc-500">
                                 {unit.name}
                               </span>
@@ -1034,7 +1072,7 @@ export default function BillingDetailPage() {
                                   setNkAdjustTarget({
                                     unitId: unit.id,
                                     unitName: unit.name,
-                                    tenantName,
+                                    tenantName: name,
                                     currentMonthly: monthly,
                                     shortfall,
                                     suggested,

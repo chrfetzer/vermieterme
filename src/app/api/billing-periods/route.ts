@@ -6,7 +6,21 @@ export function GET() {
     await requireAuth();
     const billingPeriods = await prisma.billingPeriod.findMany({
       include: {
-        property: true,
+        // Units + tenant dates are needed to derive MEA shares and occupancy
+        // for the overview totals (see calculateBillingTotals).
+        property: {
+          include: {
+            units: {
+              select: {
+                id: true,
+                shares: true,
+                tenants: {
+                  select: { id: true, moveInDate: true, moveOutDate: true },
+                },
+              },
+            },
+          },
+        },
         costs: {
           include: { costCategory: true },
         },

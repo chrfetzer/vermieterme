@@ -4,7 +4,8 @@ import React from "react";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { getDefaultConfig } from "@/lib/pdf-template";
 import type { PdfTemplateConfig } from "@/types/pdf-template";
-import { BillingPdf, daysBetween } from "@/lib/billing-pdf";
+import { BillingPdf } from "@/lib/billing-pdf";
+import { calculateTenantBilling, getBillingParties } from "@/lib/billing";
 
 // --- Route Handler ---
 
@@ -78,28 +79,21 @@ export async function GET(
 
     const property = billingPeriod.property;
     const startDate = new Date(billingPeriod.startDate);
-    const endDate = new Date(billingPeriod.endDate);
 
-    let targetUnit = null;
-    let activeTenant = null;
+    // Optional ?tenantId= selects the recipient when several tenants lived in
+    // the property during the period; defaults to the first one found.
+    const requestedTenantId = new URL(request.url).searchParams.get("tenantId");
+    const party = getBillingParties(
+      property.units,
+      billingPeriod.startDate,
+      billingPeriod.endDate
+    ).find(
+      (p) =>
+        p.tenant !== null &&
+        (requestedTenantId === null || p.tenant.id === requestedTenantId)
+    );
 
-    for (const unit of property.units) {
-      const t = unit.tenants.find(
-        (t: { moveInDate: Date; moveOutDate: Date | null }) => {
-          const moveIn = new Date(t.moveInDate);
-          const moveOut = t.moveOutDate ? new Date(t.moveOutDate) : null;
-          return moveIn <= endDate && (moveOut === null || moveOut >= startDate);
-        }
-      );
-
-      if (t) {
-        targetUnit = unit;
-        activeTenant = t;
-        break;
-      }
-    }
-
-    if (!targetUnit || !activeTenant) {
+    if (!party || !party.tenant) {
       return new Response(
         JSON.stringify({
           error: "No active tenant found for this billing period",
@@ -108,42 +102,19 @@ export async function GET(
       );
     }
 
-    const costs = billingPeriod.costs
-      .filter(
-        (cost: { enabled: boolean }) => cost.enabled !== false
-      )
-      .map(
-        (cost: {
-          costCategory: { name: string; distributionKey: string };
-          totalAmount: number;
-          unitAmount: number | null;
-          distributionKeyOverride: string | null;
-        }) => ({
-          categoryName: cost.costCategory.name,
-          // Per-period override takes precedence over the category default.
-          distributionKey:
-            cost.distributionKeyOverride ?? cost.costCategory.distributionKey,
-          totalAmount: cost.totalAmount,
-          unitAmount: cost.unitAmount ?? 0,
-        })
-      );
-
-    const totalCosts = costs.reduce(
-      (sum: number, c: { totalAmount: number }) => sum + c.totalAmount,
-      0
+    const targetUnit = party.unit;
+    const activeTenant = party.tenant;
+    const result = calculateTenantBilling(
+      { ...billingPeriod, prepayments: targetUnit.prepayments },
+      targetUnit,
+      activeTenant
     );
-    const totalUnitCosts = costs.reduce(
-      (sum: number, c: { unitAmount: number }) => sum + c.unitAmount,
-      0
-    );
-
-    const prepayment = targetUnit.prepayments.find(
-      (p: { billingPeriodId: string }) => p.billingPeriodId === id
-    );
-    const months = daysBetween(startDate, endDate) / 30.44;
-    const totalPrepayment = prepayment
-      ? prepayment.monthlyAmount * Math.round(months)
-      : 0;
+    const costs = result.lines.map((line) => ({
+      categoryName: line.cost.costCategory.name,
+      distributionKey: line.distributionKey,
+      totalAmount: line.totalAmount,
+      unitAmount: line.unitAmount,
+    }));
 
     const year = startDate.getFullYear();
 
@@ -155,9 +126,10 @@ export async function GET(
         unit={targetUnit}
         tenant={activeTenant}
         costs={costs}
-        totalCosts={totalCosts}
-        totalUnitCosts={totalUnitCosts}
-        totalPrepayment={totalPrepayment}
+        totalCosts={result.totalCosts}
+        totalUnitCosts={result.totalUnitCosts}
+        totalPrepayment={result.totalPrepayment}
+        occupancy={result.occupancy}
         templateConfig={templateConfig}
       />
     );

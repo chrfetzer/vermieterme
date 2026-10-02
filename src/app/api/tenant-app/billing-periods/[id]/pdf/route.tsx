@@ -3,7 +3,8 @@ import React from "react";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { getDefaultConfig } from "@/lib/pdf-template";
 import type { PdfTemplateConfig } from "@/types/pdf-template";
-import { BillingPdf, daysBetween } from "@/lib/billing-pdf";
+import { BillingPdf } from "@/lib/billing-pdf";
+import { calculateTenantBilling } from "@/lib/billing";
 import { requireTenantAuth } from "@/lib/tenant-auth";
 import { ApiError } from "@/lib/api-utils";
 
@@ -64,26 +65,14 @@ export async function GET(
     const unit = tenant.unit;
     const property = unit.property;
     const startDate = new Date(billingPeriod.startDate);
-    const endDate = new Date(billingPeriod.endDate);
 
-    const costs = billingPeriod.costs
-      .filter((cost) => cost.enabled !== false)
-      .map((cost) => ({
-        categoryName: cost.costCategory.name,
-        distributionKey:
-          cost.distributionKeyOverride ?? cost.costCategory.distributionKey,
-        totalAmount: cost.totalAmount,
-        unitAmount: cost.unitAmount ?? 0,
-      }));
-
-    const totalCosts = costs.reduce((sum, c) => sum + c.totalAmount, 0);
-    const totalUnitCosts = costs.reduce((sum, c) => sum + c.unitAmount, 0);
-
-    const prepayment = billingPeriod.prepayments[0];
-    const months = daysBetween(startDate, endDate) / 30.44;
-    const totalPrepayment = prepayment
-      ? prepayment.monthlyAmount * Math.round(months)
-      : 0;
+    const result = calculateTenantBilling(billingPeriod, unit, tenant);
+    const costs = result.lines.map((line) => ({
+      categoryName: line.cost.costCategory.name,
+      distributionKey: line.distributionKey,
+      totalAmount: line.totalAmount,
+      unitAmount: line.unitAmount,
+    }));
 
     const year = startDate.getFullYear();
 
@@ -95,9 +84,10 @@ export async function GET(
         unit={unit}
         tenant={tenant}
         costs={costs}
-        totalCosts={totalCosts}
-        totalUnitCosts={totalUnitCosts}
-        totalPrepayment={totalPrepayment}
+        totalCosts={result.totalCosts}
+        totalUnitCosts={result.totalUnitCosts}
+        totalPrepayment={result.totalPrepayment}
+        occupancy={result.occupancy}
         templateConfig={templateConfig}
       />
     );

@@ -278,12 +278,11 @@ export default function DashboardPage() {
                     const status = getBillingStatus(bp);
                     const hasCosts = bp.costs && bp.costs.length > 0;
                     const totals = hasCosts
-                      ? calculateBillingTotals(
-                          bp.costs!,
-                          bp.prepayments ?? [],
-                          bp.startDate,
-                          bp.endDate
-                        )
+                      ? calculateBillingTotals({
+                          ...bp,
+                          costs: bp.costs!,
+                          prepayments: bp.prepayments ?? [],
+                        })
                       : null;
                     return (
                       <Link
